@@ -86,14 +86,28 @@ async def handle_media_stream(twilio_ws):
             await openai_ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
-                    "modalities": ["audio", "text"],
+                    "type": "realtime",
+                    "model": OPENAI_REALTIME_MODEL,
                     "instructions": SESSION_INSTRUCTIONS,
-                    "voice": "alloy",
-                    "input_audio_format": "g711_ulaw",
-                    "output_audio_format": "g711_ulaw",
-                    "turn_detection": {
-                        "type": "server_vad"
-                    }
+                    "audio": {
+                        "input": {
+                            "format": {
+                                "type": "audio/pcmu"
+                            },
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "create_response": True,
+                                "interrupt_response": True
+                            }
+                        },
+                        "output": {
+                            "format": {
+                                "type": "audio/pcmu"
+                            },
+                            "voice": "marin"
+                        }
+                    },
+                    "output_modalities": ["audio"]
                 }
             }))
             print("session.update sent", flush=True)
@@ -102,8 +116,7 @@ async def handle_media_stream(twilio_ws):
             await openai_ws.send(json.dumps({
                 "type": "response.create",
                 "response": {
-                    "modalities": ["audio", "text"],
-                    "instructions": GREETING_INSTRUCTIONS
+                    "instructions": "Say exactly: Hello, thank you for calling AXV Global. This is Alex, your virtual assistant. How can I help you today?"
                 }
             }))
             print("response.create sent", flush=True)
