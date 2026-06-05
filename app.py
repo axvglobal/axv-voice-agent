@@ -139,6 +139,7 @@ async def handle_media_stream(twilio_ws):
                     if event_type == "start":
                         stream_sid = data["start"]["streamSid"]
                         print(f"Stream started: {stream_sid}")
+                        print("STREAM SID:", stream_sid, flush=True)
 
                     elif event_type == "media":
                         await openai_ws.send(json.dumps({
@@ -161,9 +162,11 @@ async def handle_media_stream(twilio_ws):
                         print("OPENAI EVENT:", response, flush=True)
                         event_type = response.get("type")
 
-                        if event_type == "response.audio.delta":
+                        if event_type == "response.output_audio.delta":
                             audio_payload = response.get("delta")
                             if stream_sid and audio_payload:
+                                print("FORWARDING AUDIO TO TWILIO", flush=True)
+                                print("AUDIO CHUNK SIZE:", len(audio_payload), flush=True)
                                 await asyncio.to_thread(
                                     twilio_ws.send,
                                     json.dumps({
