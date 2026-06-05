@@ -1,21 +1,32 @@
-import os
-import json
-import base64
 import asyncio
-import websockets
+import json
+import os
 
+import websockets
 from flask import Flask, Response
 from flask_sock import Sock
-from twilio.twiml.voice_response import VoiceResponse, Connect
+from twilio.twiml.voice_response import Connect, VoiceResponse
 
 app = Flask(__name__)
 sock = Sock(app)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://axv-voice-agent.onrender.com")
+OPENAI_REALTIME_URL = f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
 
-OPENAI_REALTIME_URL = (
-    "wss://api.openai.com/v1/realtime"
-    "?model=gpt-4o-realtime-preview"
+GREETING_INSTRUCTIONS = (
+    "Hello, thank you for calling AXV Global. "
+    "This is Alex, your virtual assistant. "
+    "How can I help you today?"
+)
+
+SESSION_INSTRUCTIONS = (
+    "You are Alex, a professional virtual assistant for AXV Global, "
+    "a U.S.-based e-commerce and distribution company. "
+    "Speak clearly in professional American English. "
+    "Keep responses short, natural, and helpful. "
+    "If the caller is just starting, begin with the greeting provided by the system."
 )
 
 
@@ -28,48 +39,39 @@ def home():
 def twilio_voice():
     response = VoiceResponse()
     connect = Connect()
-
-    connect.stream(
-        url="wss://axv-voice-agent.onrender.com/media-stream"
-    )
-
+    connect.stream(url=f"{PUBLIC_BASE_URL}/media-stream")
     response.append(connect)
-
     return Response(str(response), mimetype="text/xml")
 
 
 @sock.route("/media-stream")
 def media_stream(ws):
     print("Twilio connected to /media-stream")
-
     asyncio.run(handle_media_stream(ws))
 
 
 async def handle_media_stream(twilio_ws):
+    if not OPENAI_API_KEY:
+        print("Missing OPENAI_API_KEY")
+        return
+
     stream_sid = None
+    stream_closed = False
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "OpenAI-Beta": "realtime=v1",
     }
 
     async with websockets.connect(
         OPENAI_REALTIME_URL,
         extra_headers=headers,
     ) as openai_ws:
-
         await openai_ws.send(json.dumps({
             "type": "session.update",
             "session": {
-                "modalities": ["text", "audio"],
+                "modalities": ["audio", "text"],
+                "instructions": SESSION_INSTRUCTIONS,
                 "voice": "alloy",
-                "instructions": (
-                    "You are Alex, a professional virtual assistant for AXV Global, "
-                    "a U.S.-based e-commerce and distribution company. "
-                    "Speak clearly in professional American English. "
-                    "Your first goal is to greet the caller and explain that this is a test call. "
-                    "Keep responses short and natural."
-                ),
                 "input_audio_format": "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
                 "turn_detection": {
@@ -82,61 +84,67 @@ async def handle_media_stream(twilio_ws):
             "type": "response.create",
             "response": {
                 "modalities": ["audio", "text"],
-                "instructions": (
-                    "Greet the caller by saying: "
-                    "Hello, thank you for calling AXV Global. "
-                    "This is Alex, your virtual assistant. "
-                    "How can I help you today?"
-                )
+                "instructions": GREETING_INSTRUCTIONS
             }
         }))
 
         async def receive_from_twilio():
-            nonlocal stream_sid
+            nonlocal stream_sid, stream_closed
 
-            while True:
-                message = twilio_ws.receive()
+            while not stream_closed:
+                message = await asyncio.to_thread(twilio_ws.receive)
 
                 if message is None:
                     print("Twilio disconnected")
+                    stream_closed = True
+                    await openai_ws.close()
                     break
 
                 data = json.loads(message)
+                event_type = data.get("event")
 
-                if data["event"] == "start":
+                if event_type == "start":
                     stream_sid = data["start"]["streamSid"]
                     print(f"Stream started: {stream_sid}")
 
-                elif data["event"] == "media":
+                elif event_type == "media":
                     await openai_ws.send(json.dumps({
                         "type": "input_audio_buffer.append",
                         "audio": data["media"]["payload"]
                     }))
 
-                elif data["event"] == "stop":
+                elif event_type == "stop":
                     print("Stream stopped")
+                    stream_closed = True
+                    await openai_ws.close()
                     break
 
         async def send_to_twilio():
-            nonlocal stream_sid
+            nonlocal stream_sid, stream_closed
 
-            async for openai_message in openai_ws:
-                response = json.loads(openai_message)
+            try:
+                async for message in openai_ws:
+                    event = json.loads(message)
+                    event_type = event.get("type")
 
-                if response.get("type") == "response.audio.delta":
-                    audio_payload = response.get("delta")
+                    if event_type == "response.audio.delta":
+                        audio_payload = event.get("delta")
+                        if stream_sid and audio_payload:
+                            await asyncio.to_thread(
+                                twilio_ws.send,
+                                json.dumps({
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {
+                                        "payload": audio_payload
+                                    }
+                                })
+                            )
 
-                    if stream_sid and audio_payload:
-                        twilio_ws.send(json.dumps({
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {
-                                "payload": audio_payload
-                            }
-                        }))
-
-                elif response.get("type") == "error":
-                    print("OpenAI error:", response)
+                    elif event_type == "error":
+                        print("OpenAI error:", event)
+            finally:
+                stream_closed = True
 
         await asyncio.gather(
             receive_from_twilio(),
