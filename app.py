@@ -3,7 +3,7 @@ import json
 import os
 
 import websockets
-from flask import Flask, Response
+from flask import Flask, Response, request
 from flask_sock import Sock
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
@@ -39,10 +39,19 @@ def home():
 def twilio_voice():
     response = VoiceResponse()
     connect = Connect()
-    stream_url = PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
-    connect.stream(url=f"{stream_url}/media-stream")
+    connect.stream(
+        url="wss://axv-voice-agent.onrender.com/media-stream",
+        status_callback="https://axv-voice-agent.onrender.com/stream-status",
+        status_callback_method="POST"
+    )
     response.append(connect)
     return Response(str(response), mimetype="text/xml")
+
+
+@app.route("/stream-status", methods=["POST"])
+def stream_status():
+    print("STREAM STATUS:", dict(request.form), flush=True)
+    return "OK", 200
 
 
 @sock.route("/media-stream")
