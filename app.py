@@ -39,7 +39,8 @@ def home():
 def twilio_voice():
     response = VoiceResponse()
     connect = Connect()
-    connect.stream(url=f"{PUBLIC_BASE_URL}/media-stream")
+    stream_url = PUBLIC_BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
+    connect.stream(url=f"{stream_url}/media-stream")
     response.append(connect)
     return Response(str(response), mimetype="text/xml")
 
